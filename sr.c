@@ -115,11 +115,15 @@ void A_input(struct pkt packet)
           windowfirst = (windowfirst + 1) % WINDOWSIZE;
         }
 
-        // 重置计时器
-        stoptimer(A);
+        // 重置计时器，只有当还有未确认的包时才重启
         if (windowcount > 0)
         {
+          stoptimer(A);
           starttimer(A, RTT);
+        }
+        else
+        {
+          stoptimer(A);
         }
       }
       else
@@ -144,6 +148,7 @@ void A_timerinterrupt(void)
   if (TRACE > 0)
     printf("----A: time out, resend unacked packets!\n");
 
+  // 重传所有未确认的包
   for (i = 0; i < windowcount; i++)
   {
     int idx = (windowfirst + i) % WINDOWSIZE;
@@ -154,13 +159,11 @@ void A_timerinterrupt(void)
 
       tolayer3(A, buffer[idx].packet);
       packets_resent++;
-      if (!timer_started)
-      {
-        starttimer(A, RTT);
-        timer_started = 1;
-      }
     }
   }
+
+  // 重启计时器
+  starttimer(A, RTT);
 }
 
 void A_init(void)
