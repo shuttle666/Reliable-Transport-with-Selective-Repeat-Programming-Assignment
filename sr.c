@@ -16,7 +16,7 @@ static int A_nextseqnum;
 static int expectedseqnum;
 static int B_nextseqnum;
 
-/* Checksum and corruption functions */
+/* Checksum and corruption functions (unchanged) */
 int ComputeChecksum(struct pkt packet)
 {
   int checksum = 0;
@@ -30,6 +30,7 @@ int ComputeChecksum(struct pkt packet)
   return checksum;
 }
 
+/* Changed bool to int to comply with C89 */
 int IsCorrupted(struct pkt packet)
 {
   if (packet.checksum == ComputeChecksum(packet))
@@ -37,6 +38,8 @@ int IsCorrupted(struct pkt packet)
   else
     return 1; /* true */
 }
+
+/********* Sender (A) variables and functions ************/
 
 void A_output(struct msg message)
 {
@@ -93,14 +96,14 @@ void A_input(struct pkt packet)
       for (i = 0; i < windowcount; i++)
       {
         int idx = (windowfirst + i) % WINDOWSIZE;
-        if (buffer[idx].packet.seqnum == packet.acknum && !buffer[idx].acked)
+        if (buffer[idx].packet.seqnum == packet.acknum)
         {
           acked_idx = idx;
           break;
         }
       }
 
-      if (acked_idx != -1)
+      if (acked_idx != -1 && buffer[acked_idx].acked == 0)
       {
         if (TRACE > 0)
           printf("----A: ACK %d is not a duplicate\n", packet.acknum);
@@ -108,22 +111,26 @@ void A_input(struct pkt packet)
 
         buffer[acked_idx].acked = 1;
 
-        // 检查是否可以滑动窗口
-        while (windowcount > 0 && buffer[windowfirst].acked)
+        /* Slide the window: advance windowfirst until an unacked packet is found */
+        while (windowcount > 0 && buffer[windowfirst].acked == 1)
         {
           windowcount--;
           windowfirst = (windowfirst + 1) % WINDOWSIZE;
         }
 
-        // 重置计时器，只有当还有未确认的包时才重启
+        /* Stop timer and restart if there are unacked packets */
+        stoptimer(A);
         if (windowcount > 0)
         {
-          stoptimer(A);
-          starttimer(A, RTT);
-        }
-        else
-        {
-          stoptimer(A);
+          for (i = 0; i < windowcount; i++)
+          {
+            int idx = (windowfirst + i) % WINDOWSIZE;
+            if (buffer[idx].acked == 0)
+            {
+              starttimer(A, RTT);
+              break;
+            }
+          }
         }
       }
       else
@@ -143,32 +150,33 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
   int i;
-  int timer_started = 0;
+  int timer_started = 0; /* Moved declaration to comply with C89 */
 
   if (TRACE > 0)
     printf("----A: time out, resend unacked packets!\n");
 
-  // 重传所有未确认的包
   for (i = 0; i < windowcount; i++)
   {
     int idx = (windowfirst + i) % WINDOWSIZE;
-    if (buffer[idx].sent && !buffer[idx].acked)
+    if (buffer[idx].sent == 1 && buffer[idx].acked == 0)
     {
       if (TRACE > 0)
         printf("---A: resending packet %d\n", buffer[idx].packet.seqnum);
 
       tolayer3(A, buffer[idx].packet);
       packets_resent++;
+      if (!timer_started)
+      {
+        starttimer(A, RTT);
+        timer_started = 1;
+      }
     }
   }
-
-  // 重启计时器
-  starttimer(A, RTT);
 }
 
 void A_init(void)
 {
-  int i;
+  int i; /* Moved declaration to comply with C89 */
 
   A_nextseqnum = 0;
   windowfirst = 0;
@@ -181,65 +189,41 @@ void A_init(void)
   }
 }
 
+/********* Receiver (B) variables and procedures ************/
+
 void B_input(struct pkt packet)
 {
   struct pkt sendpkt;
   int i;
 
-  if (!IsCorrupted(packet))
+  if ((!IsCorrupted(packet)) && (packet.seqnum == expectedseqnum))
   {
-    int relative_seqnum = (packet.seqnum - expectedseqnum + MAX_SEQ) % MAX_SEQ;
-    
-    if (relative_seqnum < WINDOWSIZE)
-    {
-      if (packet.seqnum == expectedseqnum)
-      {
-        if (TRACE > 0)
-          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
-        packets_received++;
+    if (TRACE > 0)
+      printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
+    packets_received++;
 
-        // 直接交付给应用层
-        tolayer5(B, packet.payload);
-        expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
+    tolayer5(B, packet.payload);
 
-        // 检查缓存中是否有可以交付的包
-        while (recv_buffer[expectedseqnum % WINDOWSIZE].valid &&
-               recv_buffer[expectedseqnum % WINDOWSIZE].packet.seqnum == expectedseqnum)
-        {
-          tolayer5(B, recv_buffer[expectedseqnum % WINDOWSIZE].packet.payload);
-          recv_buffer[expectedseqnum % WINDOWSIZE].valid = 0;
-          expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
-        }
-      }
-      else if (relative_seqnum < WINDOWSIZE)
-      {
-        // 缓存失序包
-        int idx = packet.seqnum % WINDOWSIZE;
-        recv_buffer[idx].packet = packet;
-        recv_buffer[idx].valid = 1;
-      }
+    sendpkt.acknum = expectedseqnum;
 
-      // 发送当前包的ACK
-      sendpkt.acknum = packet.seqnum;
-    }
-    else
-    {
-      if (TRACE > 0)
-        printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-      sendpkt.acknum = (expectedseqnum - 1 + MAX_SEQ) % MAX_SEQ;
-    }
+    expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
   }
   else
   {
     if (TRACE > 0)
       printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-    sendpkt.acknum = (expectedseqnum - 1 + MAX_SEQ) % MAX_SEQ;
+    if (expectedseqnum == 0)
+      sendpkt.acknum = MAX_SEQ - 1;
+    else
+      sendpkt.acknum = expectedseqnum - 1;
   }
 
   sendpkt.seqnum = B_nextseqnum;
   B_nextseqnum = (B_nextseqnum + 1) % 2;
+
   for (i = 0; i < 20; i++)
     sendpkt.payload[i] = '0';
+
   sendpkt.checksum = ComputeChecksum(sendpkt);
 
   tolayer3(B, sendpkt);
@@ -247,14 +231,8 @@ void B_input(struct pkt packet)
 
 void B_init(void)
 {
-  int i;
-
   expectedseqnum = 0;
   B_nextseqnum = 1;
-  for (i = 0; i < WINDOWSIZE; i++)
-  {
-    recv_buffer[i].valid = 0;
-  }
 }
 
 void B_output(struct msg message)
