@@ -8,8 +8,8 @@
 #define MAX_SEQ 16 /* SR needs larger sequence space (at least 2*WINDOWSIZE) */
 #define NOTINUSE (-1)
 
-static struct packet_status buffer[WINDOWSIZE];
-static struct buffer recv_buffer[WINDOWSIZE]; 
+static struct packet_status buffer[WINDOWSIZE]; /* Modified to packet_status for SR */
+static struct buffer recv_buffer[WINDOWSIZE];   /* Added for receiver buffering */
 static int windowfirst, windowlast;
 static int windowcount;
 static int A_nextseqnum;
@@ -37,8 +37,6 @@ int IsCorrupted(struct pkt packet)
   else
     return 1; /* true */
 }
-
-/********* Sender (A) variables and functions ************/
 
 void A_output(struct msg message)
 {
@@ -95,14 +93,14 @@ void A_input(struct pkt packet)
       for (i = 0; i < windowcount; i++)
       {
         int idx = (windowfirst + i) % WINDOWSIZE;
-        if (buffer[idx].packet.seqnum == packet.acknum)
+        if (buffer[idx].packet.seqnum == packet.acknum && !buffer[idx].acked)
         {
           acked_idx = idx;
           break;
         }
       }
 
-      if (acked_idx != -1 && buffer[acked_idx].acked == 0)
+      if (acked_idx != -1)
       {
         if (TRACE > 0)
           printf("----A: ACK %d is not a duplicate\n", packet.acknum);
@@ -110,24 +108,18 @@ void A_input(struct pkt packet)
 
         buffer[acked_idx].acked = 1;
 
-        while (windowcount > 0 && buffer[windowfirst].acked == 1)
+        // 检查是否可以滑动窗口
+        while (windowcount > 0 && buffer[windowfirst].acked)
         {
           windowcount--;
           windowfirst = (windowfirst + 1) % WINDOWSIZE;
         }
 
+        // 重置计时器
         stoptimer(A);
         if (windowcount > 0)
         {
-          for (i = 0; i < windowcount; i++)
-          {
-            int idx = (windowfirst + i) % WINDOWSIZE;
-            if (buffer[idx].acked == 0)
-            {
-              starttimer(A, RTT);
-              break;
-            }
-          }
+          starttimer(A, RTT);
         }
       }
       else
@@ -155,7 +147,7 @@ void A_timerinterrupt(void)
   for (i = 0; i < windowcount; i++)
   {
     int idx = (windowfirst + i) % WINDOWSIZE;
-    if (buffer[idx].sent == 1 && buffer[idx].acked == 0)
+    if (buffer[idx].sent && !buffer[idx].acked)
     {
       if (TRACE > 0)
         printf("---A: resending packet %d\n", buffer[idx].packet.seqnum);
@@ -186,8 +178,6 @@ void A_init(void)
   }
 }
 
-/********* Receiver (B) variables and procedures ************/
-
 void B_input(struct pkt packet)
 {
   struct pkt sendpkt;
@@ -196,51 +186,57 @@ void B_input(struct pkt packet)
   if (!IsCorrupted(packet))
   {
     int relative_seqnum = (packet.seqnum - expectedseqnum + MAX_SEQ) % MAX_SEQ;
+    
     if (relative_seqnum < WINDOWSIZE)
     {
-      int idx = (expectedseqnum + relative_seqnum) % WINDOWSIZE;
-
-      if (!recv_buffer[idx].valid)
+      if (packet.seqnum == expectedseqnum)
       {
         if (TRACE > 0)
-          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum); /* 只在首次接收时打印 */
+          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
         packets_received++;
 
-        recv_buffer[idx].packet = packet;
-        recv_buffer[idx].valid = 1;
+        // 直接交付给应用层
+        tolayer5(B, packet.payload);
+        expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
 
-        /* 按序交付 */
-        while (recv_buffer[expectedseqnum % WINDOWSIZE].valid)
+        // 检查缓存中是否有可以交付的包
+        while (recv_buffer[expectedseqnum % WINDOWSIZE].valid &&
+               recv_buffer[expectedseqnum % WINDOWSIZE].packet.seqnum == expectedseqnum)
         {
           tolayer5(B, recv_buffer[expectedseqnum % WINDOWSIZE].packet.payload);
           recv_buffer[expectedseqnum % WINDOWSIZE].valid = 0;
           expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
         }
       }
+      else if (relative_seqnum < WINDOWSIZE)
+      {
+        // 缓存失序包
+        int idx = packet.seqnum % WINDOWSIZE;
+        recv_buffer[idx].packet = packet;
+        recv_buffer[idx].valid = 1;
+      }
 
-      /* 发送当前 expectedseqnum 的 ACK */
-      sendpkt.acknum = expectedseqnum;
+      // 发送当前包的ACK
+      sendpkt.acknum = packet.seqnum;
     }
     else
     {
       if (TRACE > 0)
         printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-      sendpkt.acknum = (expectedseqnum == 0) ? (MAX_SEQ - 1) : (expectedseqnum - 1);
+      sendpkt.acknum = (expectedseqnum - 1 + MAX_SEQ) % MAX_SEQ;
     }
   }
   else
   {
     if (TRACE > 0)
       printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-    sendpkt.acknum = (expectedseqnum == 0) ? (MAX_SEQ - 1) : (expectedseqnum - 1);
+    sendpkt.acknum = (expectedseqnum - 1 + MAX_SEQ) % MAX_SEQ;
   }
 
   sendpkt.seqnum = B_nextseqnum;
   B_nextseqnum = (B_nextseqnum + 1) % 2;
-
   for (i = 0; i < 20; i++)
     sendpkt.payload[i] = '0';
-
   sendpkt.checksum = ComputeChecksum(sendpkt);
 
   tolayer3(B, sendpkt);
