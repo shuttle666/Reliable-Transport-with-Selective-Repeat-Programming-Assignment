@@ -8,15 +8,15 @@
 #define MAX_SEQ 16 /* SR needs larger sequence space (at least 2*WINDOWSIZE) */
 #define NOTINUSE (-1)
 
-static struct packet_status buffer[WINDOWSIZE]; /* Modified to packet_status for SR */
-static struct buffer recv_buffer[WINDOWSIZE];   /* Added for receiver buffering */
+static struct packet_status buffer[WINDOWSIZE];
+static struct buffer recv_buffer[WINDOWSIZE]; 
 static int windowfirst, windowlast;
 static int windowcount;
 static int A_nextseqnum;
 static int expectedseqnum;
 static int B_nextseqnum;
 
-/* Checksum and corruption functions (unchanged) */
+/* Checksum and corruption functions */
 int ComputeChecksum(struct pkt packet)
 {
   int checksum = 0;
@@ -203,28 +203,23 @@ void B_input(struct pkt packet)
       if (!recv_buffer[idx].valid)
       {
         if (TRACE > 0)
-          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
+          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum); /* 只在首次接收时打印 */
         packets_received++;
 
         recv_buffer[idx].packet = packet;
         recv_buffer[idx].valid = 1;
 
+        /* 按序交付 */
         while (recv_buffer[expectedseqnum % WINDOWSIZE].valid)
         {
-          if (TRACE > 0)
-            printf("----B: packet %d is correctly received, send ACK!\n", recv_buffer[expectedseqnum % WINDOWSIZE].packet.seqnum);
           tolayer5(B, recv_buffer[expectedseqnum % WINDOWSIZE].packet.payload);
           recv_buffer[expectedseqnum % WINDOWSIZE].valid = 0;
           expectedseqnum = (expectedseqnum + 1) % MAX_SEQ;
         }
       }
-      else
-      {
-        if (TRACE > 0)
-          printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
-      }
 
-      sendpkt.acknum = (expectedseqnum == 0) ? (MAX_SEQ - 1) : (expectedseqnum - 1);
+      /* 发送当前 expectedseqnum 的 ACK */
+      sendpkt.acknum = expectedseqnum;
     }
     else
     {
