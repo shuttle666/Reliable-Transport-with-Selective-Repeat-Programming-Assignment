@@ -1,6 +1,5 @@
 #include <stdlib.h>
 #include <stdio.h>
-#include <stdbool.h>
 #include "emulator.h"
 #include "sr.h"
 
@@ -31,12 +30,13 @@ int ComputeChecksum(struct pkt packet)
   return checksum;
 }
 
-bool IsCorrupted(struct pkt packet)
+/* Changed bool to int to comply with C89 */
+int IsCorrupted(struct pkt packet)
 {
   if (packet.checksum == ComputeChecksum(packet))
-    return (false);
+    return 0; /* false */
   else
-    return (true);
+    return 1; /* true */
 }
 
 /********* Sender (A) variables and functions ************/
@@ -111,12 +111,14 @@ void A_input(struct pkt packet)
 
         buffer[acked_idx].acked = 1;
 
+        /* Slide the window: advance windowfirst until an unacked packet is found */
         while (windowcount > 0 && buffer[windowfirst].acked == 1)
         {
           windowcount--;
           windowfirst = (windowfirst + 1) % WINDOWSIZE;
         }
 
+        /* Stop timer and restart if there are unacked packets */
         stoptimer(A);
         if (windowcount > 0)
         {
@@ -148,12 +150,11 @@ void A_input(struct pkt packet)
 void A_timerinterrupt(void)
 {
   int i;
+  int timer_started = 0; /* Moved declaration to comply with C89 */
 
   if (TRACE > 0)
     printf("----A: time out, resend unacked packets!\n");
 
-  /* Only resend packets that are not acked */
-  int timer_started = 0;
   for (i = 0; i < windowcount; i++)
   {
     int idx = (windowfirst + i) % WINDOWSIZE;
@@ -175,11 +176,13 @@ void A_timerinterrupt(void)
 
 void A_init(void)
 {
+  int i; /* Moved declaration to comply with C89 */
+
   A_nextseqnum = 0;
   windowfirst = 0;
   windowlast = -1;
   windowcount = 0;
-  for (int i = 0; i < WINDOWSIZE; i++)
+  for (i = 0; i < WINDOWSIZE; i++)
   {
     buffer[i].sent = 0;
     buffer[i].acked = 0;
