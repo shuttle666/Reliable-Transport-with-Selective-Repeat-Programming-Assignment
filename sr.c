@@ -48,8 +48,14 @@ void A_output(struct msg message)
 {
   struct pkt sendpkt;
   int i;
+  int index;
+  /* Compute the sequence number range of the current window */
+  int seqfirst = windowfirst;
+  int seqlast = (windowfirst + WINDOWSIZE - 1) % MAX_SEQ;
 
-  if (windowcount < WINDOWSIZE)
+  /* Check if A_nextseqnum is within the current window */
+  if (((seqfirst <= seqlast) && (A_nextseqnum >= seqfirst && A_nextseqnum <= seqlast)) ||
+      ((seqfirst > seqlast) && (A_nextseqnum >= seqfirst || A_nextseqnum <= seqlast)))
   {
     if (TRACE > 1)
       printf("----A: New message arrives, send window is not full, send new messge to layer3!\n");
@@ -61,19 +67,24 @@ void A_output(struct msg message)
       sendpkt.payload[i] = message.data[i];
     sendpkt.checksum = ComputeChecksum(sendpkt);
 
-    /* Store the packet in the buffer at the current position */
-    int index = windowcount;
+    /* Calculate the buffer index based on the sequence number */
+    if (A_nextseqnum >= seqfirst)
+      index = A_nextseqnum - seqfirst;
+    else
+      index = WINDOWSIZE - seqfirst + A_nextseqnum;
     buffer[index] = sendpkt;
     windowcount++;
 
+    /* Send the packet to layer 3 */
     if (TRACE > 0)
       printf("Sending packet %d to layer 3\n", sendpkt.seqnum);
     tolayer3(A, sendpkt);
 
     /* Start the timer if this is the first packet in the window */
-    if (windowcount == 1)
+    if (A_nextseqnum == seqfirst)
       starttimer(A, RTT);
 
+    /* Increment the next sequence number */
     A_nextseqnum = (A_nextseqnum + 1) % MAX_SEQ;
   }
   else
