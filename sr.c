@@ -98,52 +98,79 @@ void A_output(struct msg message)
 /* Called from layer 3: Process an incoming ACK packet */
 void A_input(struct pkt packet)
 {
+  int ackcount = 0;
   int i;
+  int seqfirst;
+  int seqlast;
+  int index;
 
+  /* Check if the received ACK is not corrupted */
   if (!IsCorrupted(packet))
   {
     if (TRACE > 0)
       printf("----A: uncorrupted ACK %d is received\n", packet.acknum);
     total_ACKs_received++;
 
-    if (windowcount != 0)
-    {
-      int acked_idx = -1;
-      for (i = 0; i < windowcount; i++)
-      {
-        if (buffer[i].seqnum == packet.acknum)
-        {
-          acked_idx = i;
-          break;
-        }
-      }
+    /* Compute the current window's sequence number range */
+    seqfirst = windowfirst;
+    seqlast = (windowfirst + WINDOWSIZE - 1) % MAX_SEQ;
 
-      if (acked_idx != -1)
+    /* Check if the ACK is within the current window */
+    if (((seqfirst <= seqlast) && (packet.acknum >= seqfirst && packet.acknum <= seqlast)) ||
+        ((seqfirst > seqlast) && (packet.acknum >= seqfirst || packet.acknum <= seqlast)))
+    {
+      /* Calculate the buffer index for the ACK */
+      if (packet.acknum >= seqfirst)
+        index = packet.acknum - seqfirst;
+      else
+        index = WINDOWSIZE - seqfirst + packet.acknum;
+
+      /* Check if this is a new ACK */
+      if (buffer[index].acknum == NOTINUSE)
       {
         if (TRACE > 0)
           printf("----A: ACK %d is not a duplicate\n", packet.acknum);
         new_ACKs++;
-
         windowcount--;
-
-        /* Temporarily keep old window sliding logic */
-        stoptimer(A);
-        if (windowcount > 0)
-        {
-          for (i = 0; i < windowcount; i++)
-          {
-            if (buffer[i].seqnum >= windowfirst)
-            {
-              starttimer(A, RTT);
-              break;
-            }
-          }
-        }
+        buffer[index].acknum = packet.acknum;
       }
       else
       {
         if (TRACE > 0)
           printf("----A: duplicate ACK received, do nothing!\n");
+      }
+
+      /* If the ACK is for the first packet in the window, slide the window */
+      if (packet.acknum == seqfirst)
+      {
+        /* Count consecutive ACKs starting from the window's base */
+        for (i = 0; i < WINDOWSIZE; i++)
+        {
+          if (i < windowcount && buffer[i].acknum != NOTINUSE)
+            ackcount++;
+          else
+            break;
+        }
+
+        /* Slide the window by updating windowfirst */
+        windowfirst = (windowfirst + ackcount) % MAX_SEQ;
+
+        /* Shift the buffer to remove ACKed packets */
+        for (i = 0; i < WINDOWSIZE; i++)
+        {
+          if (i + ackcount < WINDOWSIZE)
+            buffer[i] = buffer[i + ackcount];
+        }
+
+        /* Restart the timer if there are still unacked packets */
+        stoptimer(A);
+        if (windowcount > 0)
+          starttimer(A, RTT);
+      }
+      else
+      {
+        /* Update buffer with the ACK */
+        buffer[index].acknum = packet.acknum;
       }
     }
   }
