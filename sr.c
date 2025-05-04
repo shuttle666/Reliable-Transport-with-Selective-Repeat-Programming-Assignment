@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "emulator.h"
 #include "sr.h"
 
@@ -36,9 +37,9 @@ int ComputeChecksum(struct pkt packet)
 int IsCorrupted(struct pkt packet)
 {
   if (packet.checksum == ComputeChecksum(packet))
-    return 0; /* false */
+    return -1; /* Uncorrupted */
   else
-    return 1; /* true */
+    return 0; /* Corrupted */
 }
 
 /********* Sender (A) functions ************/
@@ -105,7 +106,7 @@ void A_input(struct pkt packet)
   int index;
 
   /* Check if the received ACK is not corrupted */
-  if (!IsCorrupted(packet))
+  if (IsCorrupted(packet) == -1)
   {
     if (TRACE > 0)
       printf("----A: uncorrupted ACK %d is received\n", packet.acknum);
@@ -146,7 +147,7 @@ void A_input(struct pkt packet)
         /* Count consecutive ACKs starting from the window's base */
         for (i = 0; i < WINDOWSIZE; i++)
         {
-          if (i < windowcount && buffer[i].acknum != NOTINUSE)
+          if (buffer[i].acknum != NOTINUSE && buffer[i].seqnum >= 0)
             ackcount++;
           else
             break;
@@ -158,7 +159,7 @@ void A_input(struct pkt packet)
         /* Shift the buffer to remove ACKed packets */
         for (i = 0; i < WINDOWSIZE; i++)
         {
-          if (i + ackcount < WINDOWSIZE)
+          if (buffer[i + ackcount].acknum == NOTINUSE || (buffer[i].seqnum + ackcount) % MAX_SEQ == A_nextseqnum)
             buffer[i] = buffer[i + ackcount];
         }
 
@@ -215,7 +216,7 @@ void B_input(struct pkt packet)
   int index;
 
   /* Check if the received packet is not corrupted */
-  if (!IsCorrupted(packet))
+  if (IsCorrupted(packet) == -1)
   {
     if (TRACE > 0)
       printf("----B: packet %d is correctly received, send ACK!\n", packet.seqnum);
@@ -243,8 +244,8 @@ void B_input(struct pkt packet)
       else
         index = WINDOWSIZE - seqfirst + packet.seqnum;
 
-      /* If not a duplicate, store the packet in the buffer */
-      if (recv_buffer[index].seqnum != packet.seqnum)
+      /* If not a duplicate (compare payloads), store the packet */
+      if (strcmp(recv_buffer[index].payload, packet.payload) != 0)
       {
         packet.acknum = packet.seqnum;
         recv_buffer[index] = packet;
@@ -254,7 +255,7 @@ void B_input(struct pkt packet)
         {
           for (i = 0; i < WINDOWSIZE; i++)
           {
-            if (i < WINDOWSIZE && recv_buffer[i].acknum >= 0)
+            if (recv_buffer[i].acknum >= 0 && strcmp(recv_buffer[i].payload, "") != 0)
               pckcount++;
             else
               break;
